@@ -1,54 +1,26 @@
 import ee
-from osgeo import gdal, gdal_array
-import numpy as np
-import matplotlib
-from datetime import datetime
-
 from landsat_mosaic import *
 
 
-"""
-ee.Initialize()
-forestAge = ee.Image("projects/earthshot-trial/assets/forest_age_00_southamerica").toFloat().divide(10)
-abiomass = ee.ImageCollection("NASA/ORNL/biomass_carbon_density/v1").first()
-biome = ee.Image("OpenLandMap/PNV/PNV_BIOME-TYPE_BIOME00K_C/v01")
-brazil = ee.FeatureCollection("USDOS/LSIB/2017").filter(ee.Filter.eq('COUNTRY_NA', 'Brazil'));
-
-biome = biome.clip(brazil)
-forestAge = forestAge.clip(brazil)
-abiomass = abiomass.clip(brazil)
-
-print(forestAge.getInfo())
-print(abiomass.getInfo())
-
-"""
-
-def getPredictors(targetYear, predictorList, useBrazil300=False):
+def getPredictors(targetYear, yearOffset, predictorList, useBrazil300=False):
 
     # Cast as set
     predictorList = set(predictorList)
 
     # Static Predictors fixed to 2010
     # Biomes
-    predictors = ee.Image("OpenLandMap/PNV/PNV_BIOME-TYPE_BIOME00K_C/v01").select([0], ['biome']).unmask()
+    predictors = ee.Image("OpenLandMap/PNV/PNV_BIOME-TYPE_BIOME00K_C/v01").select([0], ['biome'])
     
     # Forest Age
-    forestAge = (ee.Image("projects/earthshot-trial/assets/forest_age_00_southamerica").unmask()
+    forestAge = (ee.Image("projects/earthshot-trial/assets/forest_age_00_southamerica")
                     .toFloat().divide(10).select([0], ['forestage']))
     oldgrowth = forestAge.eq(300).select([0],['oldgrowth'])
     forestAge = forestAge.subtract(oldgrowth.multiply(200)).add(targetYear-2010)
     predictors = predictors.addBands(oldgrowth).addBands(forestAge)
     
-    """
-    predictors = predictors.addBands(
-            # Advance forest age in non-oldgrowth areas
-            forestAge.add(forestAge.lt(300).multiply(targetYear-2010))
-        )
-    """
     
-    
-    # Model is based on data from 5 years Previous:
-    targetYear = targetYear - 5 
+    # Model is based on data from N years Previous:
+    targetYear = targetYear - yearOffset
 
 
     # Elevation & Terrain
@@ -153,12 +125,12 @@ def calcError(result, target):
     return valError, r2
     
     
-def biomassModel(targetYear, aoi, predictorList):
+def biomassModel(targetYear, yearOffset, aoi, predictorList):
     # Aboveground Biomass
-    abiomass = ee.ImageCollection("NASA/ORNL/biomass_carbon_density/v1").first().select('agb').unmask()
+    abiomass = ee.ImageCollection("NASA/ORNL/biomass_carbon_density/v1").first().select('agb')
     
     #Predictors
-    predictors = getPredictors(2010, predictorList, useBrazil300=True)
+    predictors = getPredictors(2010, yearOffset, predictorList, useBrazil300=True)
     trainingSample, valSample = getSample(abiomass.addBands(predictors), aoi, size=1000, classBand='biome', scale=300, split=0.5)
     
     # Train a 100-tree random forest classifier from the training sample.
@@ -175,7 +147,7 @@ def biomassModel(targetYear, aoi, predictorList):
     modelResult =  model.explain().set('ValError', valError).set('R2', valR2);
 
     # Classify the reflectance image from the trained classifier.
-    predictors = getPredictors(targetYear, predictorList)
+    predictors = getPredictors(targetYear, yearOffset, predictorList)
     predictedBiomass = predictors.classify(model)
     errorMap = predictedBiomass.subtract(abiomass)
     
@@ -184,62 +156,3 @@ def biomassModel(targetYear, aoi, predictorList):
     return modelResult, mapResult, predictors, trainingSample.merge(valSample)
           
           
-########################################
-          
-# Get bounds for our Area of Intrest in Brazil
-brazil = ee.FeatureCollection("USDOS/LSIB/2017").filter(ee.Filter.eq('COUNTRY_NA', 'Brazil'));
-
-#BBox takes: west south east north
-Regions = { "Xingu" : [30, ee.Geometry.BBox( -53.8, -12.1, -53.3, -11.7 )],  # Xingu River
-            "South" : [30, ee.Geometry.BBox( -53.6, -29.7, -53.1, -29.3 )],   # Parque Estadual Quarta Colonia (Southern Tip)
-            "Amazon": [30, ee.Geometry.BBox( -63.9,  -4.1, -63.4,  -3.7 )],   #Deep Amazon
-            "Bahia" : [30, ee.Geometry.BBox( -42.3, -11.6, -41.8, -11.2 )],   #Near Irece, Bahia
-            "Full"  : [300,ee.Geometry.BBox( -75  , -34  , -34  ,   6   )]
-        }
-        
-# Predictors always include 'biome' and 'forestage'
-# Available: {'elevation', 'aspect', 'slope', 'hillshade', 'GPP', 'Ec', 'Es', 'Ei', 'B1','B2','B3','B4','B5','B7','NDVI','NBR','NDWI', 'EVI'}
-predictorList = {'elevation', 'aspect', 'B3', 'B4', 'B5', 'B7'}
-targetYear = 2015
-runName = "Brazil{0}_{1}".format(targetYear, datetime.now().strftime("%b%d-%H%M"))
-modelResult, mapResult, predictors, samples = biomassModel(targetYear, brazil, predictorList)
-
-# Clip bounds and rescale
-modelResult = modelResult.set('importance', ee.Dictionary(modelResult.get('importance')).map(lambda k,i: ee.Number(i).divide(1e6).toInt()))
-predictors = predictors.clip(brazil)
-mapResult = mapResult.clip(brazil)
-"""
-# Export samples used to make model
-ee.batch.Export.table.toCloudStorage(
-    collection=samples,
-    description='{0}_Samples_Locations'.format(runName),
-    bucket='earthshot-trial-eeoutputs'
-).start()
-
-
-# Export Map results
-for regionName, aoi in Regions.items():
-    ee.batch.Export.image.toCloudStorage(
-            image=predictors.toInt16(),
-            description="{0}_{1}_30m_{2}_inputs".format(runName, regionName, targetYear),
-            bucket="earthshot-trial-eeoutputs",
-            scale=aoi[0],
-            maxPixels=1e10,
-            region=aoi[1],
-            formatOptions= {'cloudOptimized': True}
-        ).start()
-    
-    ee.batch.Export.image.toCloudStorage(
-            image=mapResult.multiply(100).toInt16(),
-            description="{0}_{1}_30m_{2}_outputs".format(runName, regionName, targetYear),
-            bucket="earthshot-trial-eeoutputs",
-            scale=aoi[0],
-            maxPixels=1e10,
-            region=aoi[1],
-            formatOptions= {'cloudOptimized': True}
-        ).start()
-        
-# Print errors from model to console
-print(runName, modelResult.getInfo())
-
-"""

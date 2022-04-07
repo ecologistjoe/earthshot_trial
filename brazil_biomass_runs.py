@@ -26,13 +26,13 @@ targetYear = 2025
 yearOffset = 5
 runName = "Brazil{0}_{1}".format(targetYear, datetime.now().strftime("%b%d-%H%M"))
 modelResult, mapResult, predictors, samples = biomassModel(targetYear, yearOffset, brazil, predictorList)
-print(runName, modelResult.getInfo())
 
 
 # Clip bounds and rescale
 modelResult = modelResult.set('importance', ee.Dictionary(modelResult.get('importance')).map(lambda k,i: ee.Number(i).divide(1e6).toInt()))
 predictors = predictors.clip(brazil)
 mapResult = mapResult.clip(brazil)
+
 
 # Export samples used to make model
 ee.batch.Export.table.toCloudStorage(

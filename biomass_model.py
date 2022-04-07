@@ -1,6 +1,8 @@
 import ee
 from landsat_mosaic import *
 
+#TODO : Refactor this into class
+
 
 def getPredictors(targetYear, yearOffset, predictorList, useBrazil300=False):
 
@@ -125,10 +127,10 @@ def calcError(result, target):
     return valError, r2
     
     
-def biomassModel(targetYear, yearOffset, aoi, predictorList):
+def biomassModelCreate(yearOffset, aoi, predictorList):
     # Aboveground Biomass
     abiomass = ee.ImageCollection("NASA/ORNL/biomass_carbon_density/v1").first().select('agb')
-    
+
     #Predictors
     predictors = getPredictors(2010, yearOffset, predictorList, useBrazil300=True)
     trainingSample, valSample = getSample(abiomass.addBands(predictors), aoi, size=1000, classBand='biome', scale=300, split=0.5)
@@ -146,6 +148,13 @@ def biomassModel(targetYear, yearOffset, aoi, predictorList):
     valError, valR2 = calcError(valResult, valTarget)
     modelResult =  model.explain().set('ValError', valError).set('R2', valR2);
 
+    return model, modelResult, trainingSample.merge(valSample)
+
+
+def biomassModelPredict(model, targetYear, yearOffset, predictorList):
+    # Aboveground Biomass
+    abiomass = ee.ImageCollection("NASA/ORNL/biomass_carbon_density/v1").first().select('agb')
+    
     # Classify the reflectance image from the trained classifier.
     predictors = getPredictors(targetYear, yearOffset, predictorList)
     predictedBiomass = predictors.classify(model)
@@ -153,6 +162,6 @@ def biomassModel(targetYear, yearOffset, aoi, predictorList):
     
     mapResult = predictedBiomass.select([0],['predicted']).addBands(abiomass).addBands(errorMap.select([0],['error']))
     
-    return modelResult, mapResult, predictors, trainingSample.merge(valSample)
+    return mapResult, predictors
           
           

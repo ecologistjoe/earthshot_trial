@@ -5,7 +5,7 @@ import matplotlib
 from datetime import datetime
 
 from landsat_mosaic import *
-from biomass_model import biomassModel
+from biomass_model import biomassModelCreate, biomassModelPredict
 
 
 # Get bounds for our Area of Intrest in Brazil
@@ -22,17 +22,16 @@ Regions = { "Xingu" : [30, ee.Geometry.BBox( -53.8, -12.1, -53.3, -11.7 )],  # X
 # Predictors always include 'biome' and 'forestage'
 # Available: {'elevation', 'aspect', 'slope', 'hillshade', 'GPP', 'Ec', 'Es', 'Ei', 'B1','B2','B3','B4','B5','B7','NDVI','NBR','NDWI', 'EVI'}
 predictorList = {'elevation', 'aspect', 'B3', 'B4', 'B5', 'B7'}
-targetYear = 2025
+
+targetYear = 2010
 yearOffset = 5
 runName = "Brazil{0}_{1}".format(targetYear, datetime.now().strftime("%b%d-%H%M"))
-modelResult, mapResult, predictors, samples = biomassModel(targetYear, yearOffset, brazil, predictorList)
-
-
-# Clip bounds and rescale
+model, modelResult, samples = biomassModelCreate(yearOffset, brazil, predictorList)
 modelResult = modelResult.set('importance', ee.Dictionary(modelResult.get('importance')).map(lambda k,i: ee.Number(i).divide(1e6).toInt()))
-predictors = predictors.clip(brazil)
-mapResult = mapResult.clip(brazil)
 
+
+# Print errors from model to console
+print(runName, modelResult.getInfo())
 
 # Export samples used to make model
 ee.batch.Export.table.toCloudStorage(
@@ -43,9 +42,16 @@ ee.batch.Export.table.toCloudStorage(
 
 
 # Export Map results
-for regionName, aoi in Regions.items():
+regionName = "Xingu"
+aoi = Regions["Xingu"]
+
+#for regionName, aoi in Regions.items():
+for targetYear in range(1990, 2027):
+    runName = "Brazil{0}_{1}".format(targetYear, datetime.now().strftime("%b%d-%H%M"))
+    mapResult, predictors = biomassModelPredict(model, targetYear, yearOffset, predictorList)
+
     ee.batch.Export.image.toCloudStorage(
-           image=predictors.toInt16(),
+           image=predictors.clip(brazil).toInt16(),
            description="{0}_{1}_{2}m_{3}_inputs".format(runName, regionName, aoi[0], targetYear),
            bucket="earthshot-trial-eeoutputs",
            scale=aoi[0],
@@ -55,7 +61,7 @@ for regionName, aoi in Regions.items():
        ).start()
 
     ee.batch.Export.image.toCloudStorage(
-           image=mapResult.multiply(100).toInt16(),
+           image=mapResult.clip(brazil).multiply(100).toInt16(),
            description="{0}_{1}_{2}m_{3}_outputs".format(runName, regionName, aoi[0], targetYear),
            bucket="earthshot-trial-eeoutputs",
            scale=aoi[0],
@@ -64,5 +70,3 @@ for regionName, aoi in Regions.items():
            formatOptions= {'cloudOptimized': True}
        ).start()
    
-# Print errors from model to console
-print(runName, modelResult.getInfo())
